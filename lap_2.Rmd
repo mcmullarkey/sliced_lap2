@@ -375,7 +375,7 @@ xg_rs_relv <-
 
 ```
 
-Also, these metrics are before things are squared, so I know this RMSE is actually much higher
+Also, these metrics are before things are squared, so I know this RMSE is actually much higher (Note: I meant RMSLE and lower, but oh well! I would have had to create a custom metric with yardstick to get RMSLE, which is why I originally tried to take the log of price! At this point I was more concerned about submitting *a* model than submitting an amazing model)
 
 Alright, the reduced model does worse on CV so let's frantically try to tune through! Will it work? Probably not, but I'm going to do it in a way that keeps my console free so I can do viz :)
 
@@ -470,6 +470,152 @@ ggplot(data = world) +
   #coord_sf(xlim = c(-60, -30), ylim = c(-30, 30)) +
   labs(title = "I Present, A Map")
 
+
+```
+Ok, given the conversations in Discord I wanted to go back and see how my model would have done if my adrenaline addled brain hadn't forgotten to log price + 1 rather than price by itself. I ended up taking the square root instead in a desperate attempt to make the distribution less skewed, though I knew that might make the metric more difficult to interpret.
+
+Anyway, what happens if I take the log in a non-ridiculous way...
+
+```{r post sliced log transform plus one}
+
+d_log <- read_csv("train.csv") %>% 
+  clean_names() %>% 
+  mutate(price = (log(price + 1)),
+         across(c(neighbourhood_group,neighbourhood,room_type), as.factor))
+
+# No infinite values, good start!
+
+psych::describe(d_log$price)
+
+```
+Let's take the same preprocessing recipe as above to keep everything the same except for taking the non-crappy log of price.
+
+```{r}
+
+xg_rec_log <- recipe(price ~ ., data = d_log) %>% 
+  step_rm(host_id) %>% 
+  update_role(id, new_role = "id") %>% 
+  step_tokenize(name, host_name) %>% 
+  step_stopwords(name, host_name) %>%
+  step_tokenfilter(name, host_name, max_tokens = 10) %>% # Trying to see how these work (In multiple ways!) Don't want too many tokens since I saw on DRobs streams they can actually make things worse
+  step_tfidf(name, host_name) %>% 
+  step_mutate(miss_rev_month = factor(case_when(
+    is.na(reviews_per_month) ~ "Yes",
+    TRUE ~ "No"
+  ))) %>% # We learned from our viz this might matter, lol this was breaking everything. I had to "Wrap it"
+#  step_mutate(as.Date(last_review)) %>% 
+  # step_date(last_review) %>% # Getting us a bunch of features off of this date, which looks like it could matter %>% 
+  # step_holiday(last_review) %>% # I know this isn't the typical use of accounting for holidays (since it's the last review and not the date, but we'll see if it pops in feature importance)
+  step_rm(last_review) %>% 
+  step_novel(all_nominal_predictors()) %>% 
+  step_other(all_nominal_predictors()) %>% 
+  #step_rm(last_review_dow_other) %>% 
+  step_nzv(all_predictors()) %>% 
+  step_dummy(all_nominal_predictors(), one_hot = TRUE) %>% 
+  step_YeoJohnson(all_predictors()) %>% 
+  step_normalize(all_predictors()) %>% 
+  step_impute_median(all_predictors())
+
+library(tictoc)
+
+tic()
+prepped <- xg_rec %>% 
+  prep(verbose = TRUE) %>% 
+  juice() %>% 
+  print()
+toc()
+
+```
+This metric is more interpretable and looks better than my other models (Where I took the square root of price and then squared the predictions in the test set)
+
+```{r}
+
+xg_wf_log <-
+  workflow() %>% 
+  add_model(xg_mod) %>% 
+  add_recipe(xg_rec_log)
+
+set.seed(33) # Larry Bird, again!
+air_folds_log <- vfold_cv(d_log, v = 10, strata = price)
+
+library(doMC)
+
+doMC::registerDoMC(cores = 7)
+
+xg_rs_log <- 
+  xg_wf %>% 
+  fit_resamples(air_folds_log, control = control_resamples(save_pred = TRUE))
+
+xg_rs_log %>% 
+  collect_metrics()
+
+```
+Looks like doing the correct version of the log (which is what I originally wanted!) gets an even better score on the Kaggle private leaderboard (0.45021 vs. my winning score of 0.45970).
+
+```{r}
+
+fitted_log <- fit(xg_wf_log, d_log)
+
+log_preds <- fitted_log %>% 
+  predict(test) %>% 
+  dplyr::select(price = .pred) %>% 
+  mutate(price = exp(price)) %>% # To reverse square root transformation
+  bind_cols(test %>% dplyr::select(id)) %>% 
+  relocate(id, price)
+
+write_csv(log_preds, "log_preds.csv")
+
+```
+
+Alright, now with tuning where do we get... Going to do everything the same as above except for taking the log of price + 1
+
+```{r}
+
+sliced_set_log <-
+  workflow_set(
+    preproc = list(xg_rec_log),
+    models = list(xg_mod_tune)
+  )
+
+write_rds(sliced_set, "sliced_set_log.rds")
+write_rds(air_folds, "air_folds_log.rds")
+
+library(rstudioapi)
+
+jobRunScript("wfsets_postmortem_tune.R", name = "tune_post", exportEnv = "R_GlobalEnv")
+
+```
+
+```{r}
+
+rank_results(race_log)
+
+best_result_log <-
+  race_log %>% 
+  pull_workflow_set_result("recipe_boost_tree") %>%  # Fill in
+  show_best(metric = "rmse") %>% 
+  print()
+
+wfsets_fitted_log <-
+  race_log %>% 
+  pull_workflow("recipe_boost_tree") %>% 
+  finalize_workflow(best_result) %>% 
+  fit(d_log)
+
+```
+
+Alright, should we tune RMSE when the metric is RMSLE? Probably not, but let's see...
+
+```{r}
+
+wfsets_preds_log <- wfsets_fitted_log %>% 
+  predict(test) %>% 
+  dplyr::select(price = .pred) %>% 
+  mutate(price = exp(price)) %>% # To reverse square root transformation
+  bind_cols(test %>% dplyr::select(id)) %>% 
+  relocate(id, price)
+
+write_csv(wfsets_preds_log, "wfsets_preds_log.csv")
 
 ```
 
