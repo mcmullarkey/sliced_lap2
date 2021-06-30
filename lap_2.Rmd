@@ -604,7 +604,7 @@ wfsets_fitted_log <-
 
 ```
 
-Alright, should we tune RMSE when the metric is RMSLE? Probably not, but let's see...
+Alright, should we tune RMSE when the metric is RMSLE?
 
 ```{r}
 
