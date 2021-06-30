@@ -604,7 +604,9 @@ wfsets_fitted_log <-
 
 ```
 
-Alright, should we tune RMSE when the metric is RMSLE?
+Alright, should we tune RMSE when the metric is RMSLE? My thinking was that even if it's not 100% ideal, we're tuning RMSE of the logged price, so fingers crossed it's close enough?
+
+Ok, looks like this actually improves the RMSLE even more (Private leaderboard: 0.44131 vs. previous log model with no tuning of 0.45021)
 
 ```{r}
 
