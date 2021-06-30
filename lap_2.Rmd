@@ -1,0 +1,475 @@
+---
+title: "Lap 2 Y'all"
+author: "Michael Mullarkey"
+date: "6/29/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+require(knitr)
+knitr::opts_chunk$set(echo = TRUE, tidy = TRUE, warning = FALSE, message = FALSE, include = FALSE)
+```
+
+Alright y'all, let's do this thing!
+
+1. I'm going to use the same strategy I used last time re: the public leaderboard. Literally never look at it (lol the typo). It's just a stressful random number generator during the competition, nobody needs that. (I'll only be looking at my own CV, and maybe toward the very end to check I at least beat the sample submission/if not see if I can correct anything)
+
+2. What data do we actually have? Not a lot of columns/features to start, but we'll see what we can do about that. We'll also want to do plots of missing data, etc. One of them is looking like a text feature, which I've worked with maybe once? So that should be interesting, we'll see some textrecipes attempted for sure
+
+3. Which data might actually matter vs. not? We don't have a bunch of features anyway, but will look out for stuff that doesn't really vary enough to matter or I just can't preprocess in a useful way fast enough. I might also try to pull in some outside data since we have lat and long, but probably won't devote a bunch of resources there until we have some modeling already going. Might try to do some maps (map meta for data viz!) and it would be hilarious if that were a golden feature again
+
+4. I'm going to dive into some viz of what combinations of variables might matter, even if they aren't strongly linearly related to the outcome. Some interaction plots, maybe even a radial for one of the many category variables? I might try to do some time series plotting but not sure how best to tackle that quite yet.
+
+5. Then want to get a minimum viable model going with some feature engineering based on the data viz I've done, then get feature importance from that model to see if dropping some features actually improves model fit (Y'all know I'm using xgboost, and irrelevant features can fuck those up)
+
+6. After that, I'll use a job to tune through an xgboost and catboost model of whichever of the original two models worked better. That will leave my console free to do as much more viz as I can
+
+7. I can't let y'all have everything up front! If I have time I might try something a little wild...
+
+
+```{r data time}
+
+library(tidymodels)
+library(tidyverse)
+library(janitor)
+library(psych)
+library(sf)
+library(tictoc)
+library(skimr)
+library(naniar)
+library(tvthemes)
+library(treesnip)
+library(catboost)
+library(visdat)
+tidymodels_prefer()
+
+```
+
+Ok, some packages loaded (which I literally almost forgot to do!) and now loading data. The columns look the same across train and test when I load them in, so less disastrous start than it could be.
+
+We need to do some kind of transformation to make this data more symmetrical, and while I think Box Cox might be best (especially with zero inflation) I'm going with log for now since I don't know the best way to re-transform my predictions to account for the Box-Cox transformation (I could learn, but not in 2 hours!)
+
+Secret Factors:
+
+neighbourhood_group
+neighbourhood
+room_type
+
+Potential Text Recipes:
+name
+host_name
+
+To Drop (Will Do in Recipe):
+
+host_id
+
+```{r}
+
+d <- read_csv("train.csv") %>% 
+  clean_names() %>% 
+  mutate(price = sqrt(price),
+         across(c(neighbourhood_group,neighbourhood,room_type), as.factor)) # Need to remember to account for this later by taking the predictions to e
+
+test <- read_csv("test.csv") %>% 
+  clean_names() %>% 
+  mutate(across(c(neighbourhood_group,neighbourhood,room_type), as.factor))
+
+compare_df_cols_same(d, test)
+
+```
+
+Shout out to Jesse for the tvthemes package use! I'm going with a different show though... Also, I'm betting this outcome data is wildly skewed and want to double check before going much further. If it is might need to do a transformation up front on the data and account for it throughout my process.
+
+Ok, so it's wildly skewed, but when I winsorize the price it actually looks like we have almost a binomial distribution (not quite, but still)
+
+```{r viz outcome distribution}
+
+d %>% 
+  mutate(price = winsor(price)) %>% 
+  ggplot(aes(price)) +
+  geom_bar(alpha = 0.5) +
+  theme_avatar() 
+
+# Yep, wildly skewed. Also, good luck tuning a Bayesian model on this one in time! Though I bet some people could I definitely couldn't (looking at the number of rows)
+
+psych::describe(d$price)
+
+## What if we log it? Nope. Square root? Nope. (I mean maybe, we'll see)
+
+d %>% 
+  mutate(price = log(price)) %>% 
+  ggplot(aes(price)) +
+  geom_bar(alpha = 0.5)
+
+d %>% 
+  mutate(price = sqrt(price)) %>% 
+  ggplot(aes(price)) +
+  geom_bar(alpha = 0.5)
+
+```
+
+```{r}
+
+library(visdat)
+
+vis_dat(d)
+
+```
+Not a lot of missing data, but some in categories that seem like they could be relevant (last review and reviews_per_month)
+
+```{r}
+
+vis_miss(d) + 
+  scale_fill_avatar(palette = "FireNation")
+
+```
+
+Ok, trying to get a sense if certain features being missing could be a signal in itself (though we'll also use some imputation to try to account for it)
+
+```{r}
+
+d %>% 
+  ggplot(aes(x = reviews_per_month, y = price)) +
+  geom_miss_point() +
+  geom_smooth(method = "lm") +
+  theme_avatar() +
+  scale_color_avatar(palette = "WaterTribe") +
+  labs(title = "Slight Neg Association Between Reviews Per Month Being Missing and Price",
+       subtitle = "Missing Data is Plotted 10% Lower Than the Min Value")
+
+```
+
+```{r}
+
+library(timetk)
+
+d %>% 
+ ggplot(aes(x = last_review, y = price)) +
+  geom_miss_point() +
+  geom_smooth(method = "lm") +
+  theme_avatar() +
+  scale_color_avatar(palette = "EarthKingdom") +
+  labs(title = "Not a Strong Apparent Linear Association Between Missing Data for \nTime of Last Review and Price",
+       subtitle = "Missing Data is Plotted 10% Lower Than the Min Value")  
+
+```
+Lol I accidentally called my splines basic... Whoops! Sorry splines. Ok, so maybe some information in a listing missing data on reviews per month, but doesn't seem to be much in knowing if review of last date is missing.
+
+```{r}
+
+d %>% 
+ ggplot(aes(x = last_review, y = price)) +
+  geom_miss_point() +
+  geom_smooth(method = "gam") +
+  theme_avatar() +
+  scale_color_avatar(palette = "EarthKingdom") +
+  labs(title = "And No Use Trying to Use Basis Splines for Looking at Missingness Either!",
+       subtitle = "Missing Data is Plotted 10% Lower Than the Min Value")  
+
+```
+Alright, so for now we might include was number of reviews last month missing as another feature based on our viz, now let's look at linear relationships between the predictors and the outcome.
+
+The only decently strong linear predictor is a negative association with longitude (I can't imagine what places on the Upper East Side must cost, but maybe we'll viz that later if we have time)
+
+```{r}
+
+library(heatmaply)
+
+d_cor <- d %>% 
+  dplyr::select(where(is.numeric), -id,-host_id) %>% 
+  na.omit() %>% 
+  cor()
+
+heatmaply::heatmaply_cor(d_cor)
+
+```
+
+I'm also wondering how good time would be as a predictor all by itself (different viz than earlier, that was looking at missingness, this is seeing if prices have a consistent fluctuation over time of last review, not the same as time!)
+
+```{r}
+
+d %>% 
+  na.omit() %>% 
+  plot_time_series(last_review, price, .interactive = TRUE, .title = "Much Lower Prices and Variability in Price if Last Review is Prior to 2015\nMaybe Airbnb Had a Big Funding Round Then?")
+
+```
+
+Ok, so we have some sense of feature engineering we might do, and I wouldn't expect a linear model on its own to perform super well given the pretty weak correlations we observed with the numeric variables.
+
+Based on what we know now, let's do some feature engineering (some back up top) and get a model put through its paces. Spoiler alert: xgboost about to get chilly in here
+
+Secret Factors:
+
+neighbourhood_group
+neighbourhood
+room_type
+
+Potential Text Recipes:
+name
+host_name
+
+To Drop:
+
+host_id
+
+```{r}
+
+skim(d)
+
+```
+
+Am I struggling to remember how to use textrecipes and frantically googling? Who's to say?
+
+Alright, after the longest preprocessing recipe experience of my life let's actually fit some models! Just kidding, still a mini-disaster, but I got this. I need to figure out what's going wrong, and I'm pretty sure it's the log transform from the beginning which I just remembered is literally undefined. I'm going to try square root now
+
+```{r}
+
+library(textrecipes)
+library(lubridate)
+
+glimpse(d)
+
+xg_rec <- recipe(price ~ ., data = d) %>% 
+  step_rm(host_id) %>% 
+  update_role(id, new_role = "id") %>% 
+  step_tokenize(name, host_name) %>% 
+  step_stopwords(name, host_name) %>%
+  step_tokenfilter(name, host_name, max_tokens = 10) %>% # Trying to see how these work (In multiple ways!) Don't want too many tokens since I saw on DRobs streams they can actually make things worse
+  step_tfidf(name, host_name) %>% 
+  step_mutate(miss_rev_month = factor(case_when(
+    is.na(reviews_per_month) ~ "Yes",
+    TRUE ~ "No"
+  ))) %>% # We learned from our viz this might matter, lol this was breaking everything. I had to "Wrap it"
+#  step_mutate(as.Date(last_review)) %>% 
+  # step_date(last_review) %>% # Getting us a bunch of features off of this date, which looks like it could matter %>% 
+  # step_holiday(last_review) %>% # I know this isn't the typical use of accounting for holidays (since it's the last review and not the date, but we'll see if it pops in feature importance)
+  step_rm(last_review) %>% 
+  step_novel(all_nominal_predictors()) %>% 
+  step_other(all_nominal_predictors()) %>% 
+  #step_rm(last_review_dow_other) %>% 
+  step_nzv(all_predictors()) %>% 
+  step_dummy(all_nominal_predictors(), one_hot = TRUE) %>% 
+  step_YeoJohnson(all_predictors()) %>% 
+  step_normalize(all_predictors()) %>% 
+  step_impute_median(all_predictors())
+
+library(tictoc)
+
+tic()
+prepped <- xg_rec %>% 
+  prep(verbose = TRUE) %>% 
+  juice()
+toc()
+  
+  
+
+```
+
+```{r}
+
+xg_mod <- boost_tree() %>% 
+  set_engine("xgboost") %>% 
+  set_mode("regression")
+
+xg_wf <-
+  workflow() %>% 
+  add_model(xg_mod) %>% 
+  add_recipe(xg_rec)
+
+set.seed(33) # Larry Bird, again!
+air_folds <- vfold_cv(d, v = 10, strata = price)
+
+# Let's just do the CV in here, then tune if we have time
+
+library(doMC)
+
+doMC::registerDoMC(cores = 7)
+
+xg_rs <- 
+  xg_wf %>% 
+  fit_resamples(air_folds, control = control_resamples(save_pred = TRUE))
+
+```
+
+Also, these metrics are before things are squared, so I know this RMSE is actually much higher
+
+```{r}
+
+xg_rs %>% 
+  collect_metrics(summarize = TRUE)
+
+```
+Awesome, we got the model to fit! I'm counting that as I win, I was sweating y'all
+
+```{r}
+
+fitted_mvm <- fit(xg_wf, d)
+
+mvm_preds <- fitted_mvm %>% 
+  predict(test) %>% 
+  dplyr::select(price = .pred) %>% 
+  mutate(price = price^2) %>% # To reverse square root transformation
+  bind_cols(test %>% dplyr::select(id)) %>% 
+  relocate(id, price)
+
+write_csv(mvm_preds, "mvm_preds.csv")
+```
+
+Alright, we're on the board, and I think we have time to look at variable importance and MAYBE tune
+
+Alright (alright alright) it looks like some features are way more important than others, we might try trimming down the features to see if that improves the model (I'm a little worried the entire apartment might be overfitting, but probably not in this case!)
+
+```{r}
+
+library(vip)
+
+fitted_mvm %>% 
+  pull_workflow_fit() %>% 
+  vip(num_features = 20)
+
+```
+```{r}
+
+glimpse(d)
+
+xg_rec_relv <- recipe(price ~ room_type + longitude + latitude + availability_365 + minimum_nights,
+              calculated_host_listings_count + number_of_reviews, data = d) %>%
+  step_novel(all_nominal_predictors()) %>% 
+  step_other(all_nominal_predictors()) %>% 
+  step_nzv(all_predictors()) %>% 
+  step_dummy(all_nominal_predictors(), one_hot = TRUE) %>% 
+  step_YeoJohnson(all_predictors()) %>% 
+  step_normalize(all_predictors()) %>% 
+  step_impute_median(all_predictors())
+
+library(tictoc)
+
+tic()
+prepped <- xg_rec_relv %>% 
+  prep(verbose = TRUE) %>% 
+  juice() %>% 
+  print()
+toc()
+
+```
+
+```{r}
+
+xg_wf_relv <-
+  workflow() %>% 
+  add_model(xg_mod) %>% 
+  add_recipe(xg_rec_relv)
+
+set.seed(33) # Larry Bird, again!
+air_folds <- vfold_cv(d, v = 10, strata = price)
+
+# Let's just do the CV in here, then tune if we have time
+
+library(doMC)
+
+doMC::registerDoMC(cores = 7)
+
+xg_rs_relv <- 
+  xg_wf_relv %>% 
+  fit_resamples(air_folds, control = control_resamples(save_pred = TRUE))
+
+```
+
+Also, these metrics are before things are squared, so I know this RMSE is actually much higher
+
+Alright, the reduced model does worse on CV so let's frantically try to tune through! Will it work? Probably not, but I'm going to do it in a way that keeps my console free so I can do viz :)
+
+```{r}
+
+xg_rs_relv %>% 
+  collect_metrics(summarize = TRUE)
+
+```
+Not much of a worflow "set" but this is what I can do quickly because I've done it before!
+
+```{r}
+
+xg_mod_tune <- boost_tree(trees = tune(), learn_rate = tune(), min_n = tune()) %>% 
+  set_engine("xgboost") %>% 
+  set_mode("regression")
+
+sliced_set <-
+  workflow_set(
+    preproc = list(xg_rec),
+    models = list(xg_mod_tune)
+  )
+
+write_rds(sliced_set, "sliced_set.rds")
+write_rds(air_folds, "air_folds.rds")
+
+library(rstudioapi)
+
+jobRunScript("wfsets_desperation_tune.R", name = "tune", exportEnv = "R_GlobalEnv")
+
+```
+
+```{r}
+
+rank_results(race)
+
+best_result <-
+  race %>% 
+  pull_workflow_set_result("recipe_boost_tree") %>%  # Fill in
+  show_best(metric = "rmse") %>% 
+  print()
+
+wfsets_fitted <-
+  race %>% 
+  pull_workflow("recipe_boost_tree") %>% 
+  finalize_workflow(best_result) %>% 
+  fit(d)
+
+```
+
+Alright, trying to have code ready in case my tune by some miracle comes through in time. We'll see...
+
+```{r}
+
+wfsets_preds <- wfsets_fitted %>% 
+  predict(test) %>% 
+  dplyr::select(price = .pred) %>% 
+  mutate(price = price^2) %>% # To reverse square root transformation
+  bind_cols(test %>% dplyr::select(id)) %>% 
+  relocate(id, price)
+
+write_csv(wfsets_preds, "wfsets_preds.csv")
+
+```
+
+Ok, should I make a map? I think maybe I should make a map. I can't help myself
+
+Just kidding my tuning actually finished!! Will prioritize trying to get those in since I spent a lot of time (if not successfully) on viz earlier
+
+Ok, map time (Is this my brand?)
+
+I've never done a map like this before, let's see if I can pull it off in 8 minutes
+
+```{r}
+
+library(sf)
+
+install.packages("rnaturalearthdata")
+install.packages("rnaturalearth")
+library(rnaturalearthdata)
+library(rnaturalearth)
+
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+sites <- d %>% 
+  dplyr::select(latitude, longitude)
+
+ggplot(data = world) + 
+  geom_sf() +
+  geom_point(data = sites, aes(x = longitude, y = latitude),
+             size = 40) +
+  #coord_sf(xlim = c(-60, -30), ylim = c(-30, 30)) +
+  labs(title = "I Present, A Map")
+
+
+```
+
