@@ -1,1 +1,3 @@
-# sliced_lap2
+# SLICED 2021 Lap 2
+
+This is the notebook I used to win the modeling of Season 01, Episode 05 of [SLICED](https://www.notion.so/SLICED-Show-c7bd26356e3a42279e2dfbafb0480073), a live-streamed competitive data science show hosted by [Nick Wan](https://twitter.com/nickwan) and [Meg Risdal](https://twitter.com/MeganRisdal?ref_src=twsrc%5Egoogle%7Ctwcamp%5Eserp%7Ctwgr%5Eauthor). Contestants compete to solve a prediction problem while doing data visualization on data they've never seen before within 2 hours. Season 01 of SLICED is happening every Tuesday at 8:30 PM EST until August 17, 2021. You can watch the livestreams [here](https://twitter.com/nickwan) and check out the replays [here](https://www.youtube.com/channel/UCCsy9G2d0Q7m_d8cOtDineQ/videos).
