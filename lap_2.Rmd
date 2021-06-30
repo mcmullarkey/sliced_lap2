@@ -559,7 +559,7 @@ fitted_log <- fit(xg_wf_log, d_log)
 log_preds <- fitted_log %>% 
   predict(test) %>% 
   dplyr::select(price = .pred) %>% 
-  mutate(price = exp(price)) %>% # To reverse square root transformation
+  mutate(price = exp(price)) %>% # To reverse the log transformation
   bind_cols(test %>% dplyr::select(id)) %>% 
   relocate(id, price)
 
@@ -613,7 +613,7 @@ Ok, looks like this actually improves the RMSLE even more (Private leaderboard: 
 wfsets_preds_log <- wfsets_fitted_log %>% 
   predict(test) %>% 
   dplyr::select(price = .pred) %>% 
-  mutate(price = exp(price)) %>% # To reverse square root transformation
+  mutate(price = exp(price)) %>% # To reverse the log transformation
   bind_cols(test %>% dplyr::select(id)) %>% 
   relocate(id, price)
 
