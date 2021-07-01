@@ -49,6 +49,8 @@ Ok, some packages loaded (which I literally almost forgot to do!) and now loadin
 
 We need to do some kind of transformation to make this data more symmetrical, and while I think Box Cox might be best (especially with zero inflation) I'm going with log for now since I don't know the best way to re-transform my predictions to account for the Box-Cox transformation (I could learn, but not in 2 hours!)
 
+(Note: I also wanted to go with log because of the error metric, though you'll see I ended up going with square root because, well... https://twitter.com/mcmullarkey/status/1410281788409364481)
+
 Secret Factors:
 
 neighbourhood_group
